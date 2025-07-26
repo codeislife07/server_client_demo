@@ -71,6 +71,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
         onError: (e) {
           add(ReceiveMessage('Error: $e'));
           socket?.close();
+          emit(const ClientState.initial());
         },
         onDone: () {
           add(ReceiveMessage('Server disconnected'));
