@@ -41,3 +41,17 @@ class ReceiveFile extends ServerEvent {
 
   const ReceiveFile(this.fileName);
 }
+
+class ReceiveError extends ServerEvent {
+  final String error;
+
+  const ReceiveError(this.error);
+}
+
+class ClientConnected extends ServerEvent {
+  const ClientConnected();
+}
+
+class ClientDisconnected extends ServerEvent {
+  const ClientDisconnected();
+}

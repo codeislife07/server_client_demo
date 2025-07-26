@@ -72,7 +72,7 @@ class _ClientScreenState extends State<ClientScreen> {
                 Expanded(
                   child: SingleChildScrollView(
                     child: SizedBox(
-                      height: MediaQuery.of(context).size.height,
+                      height: MediaQuery.of(context).size.height - 20,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [

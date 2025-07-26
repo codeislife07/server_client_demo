@@ -8,7 +8,11 @@ import '../server/server_state.dart';
 
 class ServerBloc extends Bloc<ServerEvent, ServerState> {
   ServerSocket? serverSocket;
-  Socket? clientSocket;
+  List<Socket> clientSockets = [];
+  Map<Socket, IOSink?> fileSinks = {};
+  Map<Socket, String?> fileNames = {};
+  Map<Socket, int?> fileSizes = {};
+  Map<Socket, int> bytesReceived = {};
 
   ServerBloc() : super(const ServerState.initial()) {
     on<StartServer>(_onStartServer);
@@ -18,6 +22,9 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     on<ReceiveMessage>(_onReceiveMessage);
     on<ReceiveFileList>(_onReceiveFileList);
     on<ReceiveFile>(_onReceiveFile);
+    on<ReceiveError>(_onReceiveError);
+    on<ClientConnected>(_onClientConnected);
+    on<ClientDisconnected>(_onClientDisconnected);
   }
 
   Future<void> _onStartServer(
@@ -27,7 +34,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     try {
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind(ip, event.port);
+      serverSocket = await ServerSocket.bind('0.0.0.0', event.port);
       emit(
         ServerState.running(
           ip: ip,
@@ -38,7 +45,8 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       );
 
       serverSocket!.listen((client) async {
-        clientSocket = client;
+        clientSockets.add(client);
+        add(const ClientConnected());
         final directory = await getApplicationDocumentsDirectory();
         final files = directory
             .listSync()
@@ -47,17 +55,18 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
             .toList();
         client.write(utf8.encoder.convert('LIST:${files.join(',')}'));
 
-        IOSink? sink;
-        String? fileName;
-        int? fileSize;
-        int bytesReceived = 0;
-
         client.listen(
           (data) async {
             final message = utf8.decode(data, allowMalformed: true);
             if (message.startsWith('MSG:')) {
               final text = message.substring(4);
               add(ReceiveMessage(text));
+              // Broadcast message to all other clients
+              for (var socket in clientSockets) {
+                if (socket != client) {
+                  socket.write(utf8.encoder.convert('MSG:$text'));
+                }
+              }
             } else if (message.startsWith('DOWNLOAD:')) {
               final requestedFile = message.substring(9);
               final file = File('${directory.path}/$requestedFile');
@@ -71,90 +80,103 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                 }
               } else {
                 client.write(utf8.encoder.convert('ERROR:File not found'));
+                add(ReceiveError('File not found: $requestedFile'));
               }
             } else if (message.startsWith('FILE:')) {
               final parts = message.split(':');
-              fileName = parts[1];
-              fileSize = int.parse(parts[2]);
-              sink = File('${directory.path}/$fileName').openWrite();
-              bytesReceived = 0;
-            } else if (fileName != null && sink != null) {
-              sink?.add(data);
-              bytesReceived += data.length;
-              if (bytesReceived >= fileSize!) {
-                await sink?.close();
-                sink = null;
-                add(ReceiveFile(fileName!));
-                fileName = null;
+              fileNames[client] = parts[1];
+              fileSizes[client] = int.parse(parts[2]);
+              fileSinks[client] = File(
+                '${directory.path}/${parts[1]}',
+              ).openWrite();
+              bytesReceived[client] = 0;
+            } else if (fileNames[client] != null && fileSinks[client] != null) {
+              fileSinks[client]!.add(data);
+              bytesReceived[client] = bytesReceived[client]! + data.length;
+              if (bytesReceived[client]! >= fileSizes[client]!) {
+                await fileSinks[client]!.close();
+                add(ReceiveFile(fileNames[client]!));
+                fileSinks[client] = null;
+                fileNames[client] = null;
+                fileSizes[client] = null;
+                bytesReceived[client] = 0;
                 final files = directory
                     .listSync()
                     .whereType<File>()
                     .map((f) => f.path.split('/').last)
                     .toList();
                 add(ReceiveFileList(files));
-                client.write(utf8.encoder.convert('LIST:${files.join(',')}'));
+                // Broadcast updated file list to all clients
+                for (var socket in clientSockets) {
+                  socket.write(utf8.encoder.convert('LIST:${files.join(',')}'));
+                }
               }
             }
           },
           onError: (e) {
             client.write(utf8.encoder.convert('ERROR:$e'));
-            client.close();
-            clientSocket = null;
-            add(ReceiveMessage('Client disconnected'));
+            _cleanupClient(client);
+            add(const ClientDisconnected());
           },
           onDone: () {
-            sink?.close();
-            client.close();
-            clientSocket = null;
-            add(ReceiveMessage('Client disconnected'));
+            _cleanupClient(client);
+            add(const ClientDisconnected());
           },
         );
       });
     } catch (e) {
-      emit(ServerState.error('Error starting server: $e'));
+      add(ReceiveError('Error starting server: $e'));
     }
+  }
+
+  void _cleanupClient(Socket client) {
+    fileSinks[client]?.close();
+    clientSockets.remove(client);
+    fileSinks.remove(client);
+    fileNames.remove(client);
+    fileSizes.remove(client);
+    bytesReceived.remove(client);
+    client.close();
   }
 
   Future<void> _onSendMessage(
     SendMessage event,
     Emitter<ServerState> emit,
   ) async {
-    if (clientSocket != null) {
-      clientSocket!.write('MSG:${event.message}');
+    for (var socket in clientSockets) {
+      socket.write(utf8.encoder.convert('MSG:${event.message}'));
+    }
+    emit(
+      state.copyWith(
+        messages: [
+          ...state.messages,
+          MessageModel(text: event.message, isSent: true, files: []),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onSendFile(SendFile event, Emitter<ServerState> emit) async {
+    final file = File(event.filePath);
+    if (await file.exists()) {
+      final fileSize = await file.length();
+      final fileName = file.path.split('/').last;
+      for (var socket in clientSockets) {
+        socket.write(utf8.encoder.convert('FILE:$fileName:$fileSize'));
+        await for (var chunk in file.openRead()) {
+          socket.write(chunk);
+        }
+      }
       emit(
         state.copyWith(
           messages: [
             ...state.messages,
-            MessageModel(text: event.message, isSent: true, files: []),
+            MessageModel(text: 'Sent file: $fileName', isSent: true, files: []),
           ],
         ),
       );
-    }
-  }
-
-  Future<void> _onSendFile(SendFile event, Emitter<ServerState> emit) async {
-    if (clientSocket != null) {
-      final file = File(event.filePath);
-      if (await file.exists()) {
-        final fileSize = await file.length();
-        final fileName = file.path.split('/').last;
-        clientSocket!.write('FILE:$fileName:$fileSize');
-        await for (var chunk in file.openRead()) {
-          clientSocket!.write(chunk);
-        }
-        emit(
-          state.copyWith(
-            messages: [
-              ...state.messages,
-              MessageModel(
-                text: 'Sent file: $fileName',
-                isSent: true,
-                files: [],
-              ),
-            ],
-          ),
-        );
-      }
+    } else {
+      add(ReceiveError('File not found: ${event.filePath}'));
     }
   }
 
@@ -197,14 +219,49 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     );
   }
 
+  Future<void> _onReceiveError(
+    ReceiveError event,
+    Emitter<ServerState> emit,
+  ) async {
+    emit(ServerState.error(event.error));
+  }
+
+  Future<void> _onClientConnected(
+    ClientConnected event,
+    Emitter<ServerState> emit,
+  ) async {
+    emit(state.copyWith(connectedClients: clientSockets.length));
+  }
+
+  Future<void> _onClientDisconnected(
+    ClientDisconnected event,
+    Emitter<ServerState> emit,
+  ) async {
+    emit(
+      state.copyWith(
+        connectedClients: clientSockets.length,
+        messages: [
+          ...state.messages,
+          MessageModel(text: 'Client disconnected', isSent: false, files: []),
+        ],
+      ),
+    );
+  }
+
   Future<void> _onStopServer(
     StopServer event,
     Emitter<ServerState> emit,
   ) async {
     await serverSocket?.close();
-    await clientSocket?.close();
+    for (var socket in clientSockets) {
+      socket.close();
+    }
+    clientSockets.clear();
+    fileSinks.clear();
+    fileNames.clear();
+    fileSizes.clear();
+    bytesReceived.clear();
     serverSocket = null;
-    clientSocket = null;
     emit(const ServerState.initial());
   }
 
@@ -222,7 +279,9 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
   @override
   Future<void> close() {
     serverSocket?.close();
-    clientSocket?.close();
+    for (var socket in clientSockets) {
+      socket.close();
+    }
     return super.close();
   }
 }

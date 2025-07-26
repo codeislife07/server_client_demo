@@ -7,6 +7,7 @@ class ServerState {
   final String? qrData;
   final List<String> files;
   final List<MessageModel> messages;
+  final int connectedClients; // New field for client count
 
   const ServerState({
     required this.status,
@@ -15,6 +16,7 @@ class ServerState {
     this.qrData,
     this.files = const [],
     this.messages = const [],
+    this.connectedClients = 0,
   });
 
   const ServerState.initial()
@@ -23,7 +25,8 @@ class ServerState {
       port = null,
       qrData = null,
       files = const [],
-      messages = const [];
+      messages = const [],
+      connectedClients = 0;
 
   const ServerState.loading()
     : status = 'Starting server...',
@@ -31,7 +34,8 @@ class ServerState {
       port = null,
       qrData = null,
       files = const [],
-      messages = const [];
+      messages = const [],
+      connectedClients = 0;
 
   const ServerState.running({
     required String ip,
@@ -39,20 +43,23 @@ class ServerState {
     required String qrData,
     List<String> files = const [],
     List<MessageModel> messages = const [],
+    int connectedClients = 0,
   }) : status = 'Server running',
        ip = ip,
        port = port,
        qrData = qrData,
        files = files,
-       messages = messages;
+       messages = messages,
+       connectedClients = connectedClients;
 
-  const ServerState.error(String message)
-    : status = message,
+  const ServerState.error(String error)
+    : status = 'Error: $error',
       ip = null,
       port = null,
       qrData = null,
       files = const [],
-      messages = const [];
+      messages = const [],
+      connectedClients = 0;
 
   ServerState copyWith({
     String? status,
@@ -61,6 +68,7 @@ class ServerState {
     String? qrData,
     List<String>? files,
     List<MessageModel>? messages,
+    int? connectedClients,
   }) {
     return ServerState(
       status: status ?? this.status,
@@ -69,6 +77,7 @@ class ServerState {
       qrData: qrData ?? this.qrData,
       files: files ?? this.files,
       messages: messages ?? this.messages,
+      connectedClients: connectedClients ?? this.connectedClients,
     );
   }
 }
