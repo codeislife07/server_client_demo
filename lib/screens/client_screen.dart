@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../blocs/client/client_bloc.dart';
 import '../blocs/client/client_event.dart';
 import '../blocs/client/client_state.dart';
 import '../widgets/file_list_widget.dart';
 import '../widgets/message_list_widget.dart';
 import '../services/permission_service.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
 
 class ClientScreen extends StatefulWidget {
   const ClientScreen({super.key});
@@ -22,38 +22,37 @@ class _ClientScreenState extends State<ClientScreen> {
     text: '5000',
   );
   final TextEditingController messageController = TextEditingController();
-  QRViewController? qrController;
-  final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
+  MobileScannerController? scannerController;
 
   @override
   void initState() {
     super.initState();
     PermissionService.requestPermissions();
+    scannerController = MobileScannerController();
   }
 
-  void onQRViewCreated(QRViewController controller) {
-    setState(() {
-      qrController = controller;
-    });
-    controller.scannedDataStream.listen((scanData) {
-      if (scanData.code != null) {
-        final parts = scanData.code!.split(':');
+  void _onQRCodeDetected(BarcodeCapture capture) {
+    final barcodes = capture.barcodes;
+    if (barcodes.isNotEmpty) {
+      final qrData = barcodes.first.rawValue;
+      if (qrData != null) {
+        final parts = qrData.split(':');
         if (parts.length == 2) {
           ipController.text = parts[0];
           portController.text = parts[1];
           context.read<ClientBloc>().add(
             ConnectToServer(parts[0], int.parse(parts[1])),
           );
-          qrController?.pauseCamera();
+          scannerController?.stop();
           Navigator.pop(context);
         }
       }
-    });
+    }
   }
 
   @override
   void dispose() {
-    qrController?.dispose();
+    scannerController?.dispose();
     ipController.dispose();
     portController.dispose();
     messageController.dispose();
@@ -130,9 +129,9 @@ class _ClientScreenState extends State<ClientScreen> {
                                     child: SizedBox(
                                       width: 300,
                                       height: 300,
-                                      child: QRView(
-                                        key: qrKey,
-                                        onQRViewCreated: onQRViewCreated,
+                                      child: MobileScanner(
+                                        controller: scannerController,
+                                        onDetect: _onQRCodeDetected,
                                       ),
                                     ),
                                   ),
