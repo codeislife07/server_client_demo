@@ -23,3 +23,21 @@ class SendFile extends ServerEvent {
 
   const SendFile(this.filePath);
 }
+
+class ReceiveMessage extends ServerEvent {
+  final String message;
+
+  const ReceiveMessage(this.message);
+}
+
+class ReceiveFileList extends ServerEvent {
+  final List<String> files;
+
+  const ReceiveFileList(this.files);
+}
+
+class ReceiveFile extends ServerEvent {
+  final String fileName;
+
+  const ReceiveFile(this.fileName);
+}

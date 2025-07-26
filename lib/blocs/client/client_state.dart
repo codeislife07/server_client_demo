@@ -41,6 +41,13 @@ class ClientState {
        files = files,
        messages = messages;
 
+  const ClientState.error(String error)
+    : status = 'Error: $error',
+      ip = null,
+      port = null,
+      files = const [],
+      messages = const [];
+
   ClientState copyWith({
     String? status,
     String? ip,

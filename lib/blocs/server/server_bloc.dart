@@ -15,6 +15,9 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     on<StopServer>(_onStopServer);
     on<SendMessage>(_onSendMessage);
     on<SendFile>(_onSendFile);
+    on<ReceiveMessage>(_onReceiveMessage);
+    on<ReceiveFileList>(_onReceiveFileList);
+    on<ReceiveFile>(_onReceiveFile);
   }
 
   Future<void> _onStartServer(
@@ -24,7 +27,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     try {
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind(ip, event.port);
+      serverSocket = await ServerSocket.bind('0.0.0.0', event.port);
       emit(
         ServerState.running(
           ip: ip,
@@ -54,14 +57,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
             final message = utf8.decode(data, allowMalformed: true);
             if (message.startsWith('MSG:')) {
               final text = message.substring(4);
-              emit(
-                state.copyWith(
-                  messages: [
-                    ...state.messages,
-                    MessageModel(text: text, isSent: false),
-                  ],
-                ),
-              );
+              add(ReceiveMessage(text));
             } else if (message.startsWith('DOWNLOAD:')) {
               final requestedFile = message.substring(9);
               final file = File('${directory.path}/$requestedFile');
@@ -88,13 +84,14 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
               if (bytesReceived >= fileSize!) {
                 await sink?.close();
                 sink = null;
+                add(ReceiveFile(fileName!));
                 fileName = null;
                 final files = directory
                     .listSync()
                     .whereType<File>()
                     .map((f) => f.path.split('/').last)
                     .toList();
-                emit(state.copyWith(files: files));
+                add(ReceiveFileList(files));
                 client.write(utf8.encoder.convert('LIST:${files.join(',')}'));
               }
             }
@@ -103,27 +100,13 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
             client.write(utf8.encoder.convert('ERROR:$e'));
             client.close();
             clientSocket = null;
-            emit(
-              state.copyWith(
-                messages: [
-                  ...state.messages,
-                  MessageModel(text: 'Client disconnected', isSent: false),
-                ],
-              ),
-            );
+            add(ReceiveMessage('Client disconnected'));
           },
           onDone: () {
             sink?.close();
             client.close();
             clientSocket = null;
-            emit(
-              state.copyWith(
-                messages: [
-                  ...state.messages,
-                  MessageModel(text: 'Client disconnected', isSent: false),
-                ],
-              ),
-            );
+            add(ReceiveMessage('Client disconnected'));
           },
         );
       });
@@ -142,7 +125,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
         state.copyWith(
           messages: [
             ...state.messages,
-            MessageModel(text: event.message, isSent: true),
+            MessageModel(text: event.message, isSent: true, files: []),
           ],
         ),
       );
@@ -163,12 +146,55 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
           state.copyWith(
             messages: [
               ...state.messages,
-              MessageModel(text: 'Sent file: $fileName', isSent: true),
+              MessageModel(
+                text: 'Sent file: $fileName',
+                isSent: true,
+                files: [],
+              ),
             ],
           ),
         );
       }
     }
+  }
+
+  Future<void> _onReceiveMessage(
+    ReceiveMessage event,
+    Emitter<ServerState> emit,
+  ) async {
+    emit(
+      state.copyWith(
+        messages: [
+          ...state.messages,
+          MessageModel(text: event.message, isSent: false, files: []),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onReceiveFileList(
+    ReceiveFileList event,
+    Emitter<ServerState> emit,
+  ) async {
+    emit(state.copyWith(files: event.files));
+  }
+
+  Future<void> _onReceiveFile(
+    ReceiveFile event,
+    Emitter<ServerState> emit,
+  ) async {
+    emit(
+      state.copyWith(
+        messages: [
+          ...state.messages,
+          MessageModel(
+            text: 'Received file: ${event.fileName}',
+            isSent: false,
+            files: [],
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _onStopServer(

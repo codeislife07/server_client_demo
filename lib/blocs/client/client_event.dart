@@ -30,3 +30,21 @@ class SendFile extends ClientEvent {
 class Disconnect extends ClientEvent {
   const Disconnect();
 }
+
+class ReceiveMessage extends ClientEvent {
+  final String message;
+
+  const ReceiveMessage(this.message);
+}
+
+class ReceiveFileList extends ClientEvent {
+  final List<String> files;
+
+  const ReceiveFileList(this.files);
+}
+
+class ReceiveFile extends ClientEvent {
+  final String fileName;
+
+  const ReceiveFile(this.fileName);
+}
