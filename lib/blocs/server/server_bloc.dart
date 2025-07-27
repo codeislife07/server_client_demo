@@ -39,7 +39,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       log('Starting server on port ${event.port}');
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind(ip, event.port);
+      serverSocket = await ServerSocket.bind('0.0.0.0', event.port);
       log('Server running at $ip:${event.port}');
       emit(
         ServerState.running(
@@ -51,9 +51,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       );
 
       serverSocket!.listen((client) async {
-        log(
-          'Client connected: ${client.remoteAddress.address}:${client.remotePort}',
-        );
+        log('Client connected: ${client.remoteAddress.address}:${client.remotePort}');
         clientSockets.add(client);
         headerBuffers[client] = StringBuffer();
         add(const ClientConnected());
@@ -70,6 +68,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
           'fileId': _uuid.v4(),
         });
         client.write(utf8.encoder.convert('$header\n'));
+        await client.flush();
 
         client.listen(
           (data) async {
@@ -90,6 +89,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                     for (var socket in clientSockets) {
                       if (socket != client) {
                         socket.write(utf8.encoder.convert('$header\n'));
+                        await socket.flush();
                       }
                     }
                   } else if (header['type'] == 'download') {
@@ -97,9 +97,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                     final file = File('${directory.path}/$requestedFile');
                     if (await file.exists()) {
                       final fileSize = await file.length();
-                      log(
-                        'Sending file $requestedFile ($fileSize bytes) to client',
-                      );
+                      log('Sending file $requestedFile ($fileSize bytes) to client');
                       final fileHeader = jsonEncode({
                         'type': 'file',
                         'fileName': requestedFile,
@@ -107,6 +105,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                         'fileId': _uuid.v4(),
                       });
                       client.write(utf8.encoder.convert('$fileHeader\n'));
+                      await client.flush();
                       await for (var chunk in file.openRead()) {
                         client.write(chunk);
                       }
@@ -119,30 +118,34 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                         'fileId': _uuid.v4(),
                       });
                       client.write(utf8.encoder.convert('$errorHeader\n'));
+                      await client.flush();
                       add(ReceiveError('File not found: $requestedFile'));
                     }
                   } else if (header['type'] == 'file') {
                     fileNames[client] = header['fileName'] as String;
                     fileSizes[client] = header['fileSize'] as int;
-                    fileSinks[client] = File(
-                      '${directory.path}/${header['fileName']}',
-                    ).openWrite();
+                    fileSinks[client] =
+                        File('${directory.path}/${header['fileName']}')
+                            .openWrite();
                     bytesReceived[client] = 0;
-                    log(
-                      'Preparing to receive file: ${header['fileName']} (${header['fileSize']} bytes)',
-                    );
+                    log('Preparing to receive file: ${header['fileName']} (${header['fileSize']} bytes)');
                   }
                 } catch (e) {
                   log('Invalid header: $part, error: $e');
+                  final errorHeader = jsonEncode({
+                    'type': 'error',
+                    'message': 'Invalid header: $e',
+                    'fileId': _uuid.v4(),
+                  });
+                  client.write(utf8.encoder.convert('$errorHeader\n'));
+                  await client.flush();
                   headerBuffers[client]!.write('$part\n');
                 }
               }
             } else if (fileNames[client] != null && fileSinks[client] != null) {
               fileSinks[client]!.add(data);
               bytesReceived[client] = bytesReceived[client]! + data.length;
-              log(
-                'Receiving file data: ${fileNames[client]} (${bytesReceived[client]} / ${fileSizes[client]})',
-              );
+              log('Receiving file data: ${fileNames[client]} (${bytesReceived[client]} / ${fileSizes[client]})');
 
               if (bytesReceived[client]! >= fileSizes[client]!) {
                 await fileSinks[client]!.close();
@@ -168,6 +171,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                 });
                 for (var socket in clientSockets) {
                   socket.write(utf8.encoder.convert('$fileListHeader\n'));
+                  await socket.flush();
                 }
               }
             } else {
@@ -222,6 +226,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     });
     for (var socket in clientSockets) {
       socket.write(utf8.encoder.convert('$header\n'));
+      await socket.flush();
     }
     emit(
       state.copyWith(
@@ -233,7 +238,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     );
   }
 
-  Future<void> _onSendFile(SendFile event, Emitter<ServerState> emit) async {
+  Future<void> _onSendFile(
+    SendFile event,
+    Emitter<ServerState> emit,
+  ) async {
     final file = File(event.filePath);
     if (await file.exists()) {
       final fileSize = await file.length();
@@ -247,6 +255,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       });
       for (var socket in clientSockets) {
         socket.write(utf8.encoder.convert('$header\n'));
+        await socket.flush();
         await for (var chunk in file.openRead()) {
           socket.write(chunk);
         }

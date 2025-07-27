@@ -30,11 +30,8 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
     try {
       log('Connecting to server at ${event.ip}:${event.port}');
       emit(const ClientState.connecting());
-      socket = await Socket.connect(
-        event.ip,
-        event.port,
-        timeout: const Duration(seconds: 10),
-      );
+      socket = await Socket.connect(event.ip, event.port,
+          timeout: const Duration(seconds: 10));
       log('Connected to server');
       emit(ClientState.connected(ip: event.ip, port: event.port, messages: []));
 
@@ -61,8 +58,8 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
                   log('Received text message: $text');
                   add(ReceiveMessage(text));
                 } else if (header['type'] == 'list') {
-                  final files = (header['files'] as List<dynamic>)
-                      .cast<String>();
+                  final files =
+                      (header['files'] as List<dynamic>).cast<String>();
                   log('Received file list: $files');
                   add(ReceiveFileList(files));
                 } else if (header['type'] == 'file') {
@@ -70,9 +67,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
                   fileSize = header['fileSize'] as int;
                   final filePath =
                       '${(await getApplicationDocumentsDirectory()).path}/$fileName';
-                  log(
-                    'Receiving file: $fileName ($fileSize bytes) at $filePath',
-                  );
+                  log('Receiving file: $fileName ($fileSize bytes) at $filePath');
                   sink = File(filePath).openWrite();
                   bytesReceived = 0;
                 } else if (header['type'] == 'error') {
@@ -83,6 +78,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
               } catch (e) {
                 log('Invalid header: $part, error: $e');
                 headerBuffer.write('$part\n');
+                add(ReceiveMessage('Error: Invalid header received'));
               }
             }
           } else if (fileName != null && sink != null) {
@@ -134,6 +130,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
           'fileId': _uuid.v4(),
         });
         socket!.write('$header\n');
+        await socket!.flush();
         emit(state.copyWith(status: 'Downloading ${event.fileName}...'));
       } else {
         log('Download failed: Socket is null');
@@ -157,6 +154,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
         'fileId': _uuid.v4(),
       });
       socket!.write('$header\n');
+      await socket!.flush();
       emit(
         state.copyWith(
           messages: [
@@ -171,7 +169,10 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
     }
   }
 
-  Future<void> _onSendFile(SendFile event, Emitter<ClientState> emit) async {
+  Future<void> _onSendFile(
+    SendFile event,
+    Emitter<ClientState> emit,
+  ) async {
     if (socket != null) {
       final file = File(event.filePath);
       if (await file.exists()) {
@@ -186,6 +187,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
           'fileId': _uuid.v4(),
         });
         socket!.write('$header\n');
+        await socket!.flush();
         await for (var chunk in file.openRead()) {
           socket!.add(chunk);
         }

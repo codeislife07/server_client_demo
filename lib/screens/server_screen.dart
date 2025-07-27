@@ -62,8 +62,8 @@ class ServerScreen extends StatelessWidget {
                                     ? null
                                     : () {
                                         context.read<ServerBloc>().add(
-                                          const StartServer(5000),
-                                        );
+                                              const StartServer(5000),
+                                            );
                                       },
                                 icon: const Icon(Icons.play_arrow),
                                 label: const Text('Start Server'),
@@ -78,8 +78,8 @@ class ServerScreen extends StatelessWidget {
                                 onPressed: state.status == 'Server running'
                                     ? () {
                                         context.read<ServerBloc>().add(
-                                          const StopServer(),
-                                        );
+                                              const StopServer(),
+                                            );
                                       }
                                     : null,
                                 icon: const Icon(Icons.stop),
@@ -104,7 +104,7 @@ class ServerScreen extends StatelessWidget {
                           FileListWidget(
                             files: state.files,
                             onFileSelected: (file) {
-                              context.read<ServerBloc>().add(SendFile('$file'));
+                              // context.read<ServerBloc>().add(SendFile('$file'));
                             },
                           ),
                           const SizedBox(height: 16),
@@ -139,8 +139,8 @@ class ServerScreen extends StatelessWidget {
                           onPressed: () {
                             if (messageController.text.isNotEmpty) {
                               context.read<ServerBloc>().add(
-                                SendMessage(messageController.text),
-                              );
+                                    SendMessage(messageController.text),
+                                  );
                               messageController.clear();
                             }
                           },
@@ -148,13 +148,13 @@ class ServerScreen extends StatelessWidget {
                         ),
                         IconButton(
                           onPressed: () async {
-                            final result = await FilePicker.platform
-                                .pickFiles();
+                            final result =
+                                await FilePicker.platform.pickFiles();
                             if (result != null &&
                                 result.files.single.path != null) {
                               context.read<ServerBloc>().add(
-                                SendFile(result.files.single.path!),
-                              );
+                                    SendFile(result.files.single.path!),
+                                  );
                             }
                           },
                           icon: const Icon(Icons.attach_file),
