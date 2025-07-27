@@ -149,8 +149,8 @@ class ServerScreen extends StatelessWidget {
                         ),
                         IconButton(
                           onPressed: () async {
-                            final result =
-                                await FilePicker.platform.pickFiles();
+                            final result = await FilePicker.platform
+                                .pickFiles(type: FileType.image);
                             if (result != null &&
                                 result.files.single.path != null) {
                               context.read<ServerBloc>().add(

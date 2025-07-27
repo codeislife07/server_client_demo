@@ -39,7 +39,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       log('Starting server on port ${event.port}');
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind(ip, event.port);
+      serverSocket = await ServerSocket.bind(ip, event.port, shared: true);
       log('Server running at $ip:${event.port}');
       emit(
         ServerState.running(
@@ -114,7 +114,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                       log('File not found: $requestedFile');
                       final errorHeader = jsonEncode({
                         'type': 'error',
-                        'message': 'File not found',
+                        'message': 'File not found: $requestedFile',
                         'fileId': _uuid.v4(),
                       });
                       client.write(utf8.encoder.convert('$errorHeader\n'));
@@ -122,12 +122,36 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                       add(ReceiveError('File not found: $requestedFile'));
                     }
                   } else if (header['type'] == 'file') {
-                    fileNames[client] = header['fileName'] as String;
-                    fileSizes[client] = header['fileSize'] as int;
-                    final filePath = '${directory.path}/${header['fileName']}';
+                    final fileName = header['fileName'] as String?;
+                    final fileSize = header['fileSize'] as int?;
+                    if (fileName == null || fileSize == null) {
+                      log('Invalid file header: missing fileName or fileSize');
+                      final errorHeader = jsonEncode({
+                        'type': 'error',
+                        'message': 'Invalid file header',
+                        'fileId': _uuid.v4(),
+                      });
+                      client.write(utf8.encoder.convert('$errorHeader\n'));
+                      await client.flush();
+                      add(ReceiveError('Invalid file header'));
+                      continue;
+                    }
+                    fileNames[client] = fileName;
+                    fileSizes[client] = fileSize;
+                    final filePath = '${directory.path}/$fileName';
                     fileSinks[client] = File(filePath).openWrite();
                     bytesReceived[client] = 0;
-                    log('Preparing to receive file: ${header['fileName']} (${header['fileSize']} bytes) at $filePath');
+                    log('Preparing to receive file: $fileName ($fileSize bytes) at $filePath');
+                  } else {
+                    log('Unknown header type: ${header['type']}');
+                    final errorHeader = jsonEncode({
+                      'type': 'error',
+                      'message': 'Unknown header type: ${header['type']}',
+                      'fileId': _uuid.v4(),
+                    });
+                    client.write(utf8.encoder.convert('$errorHeader\n'));
+                    await client.flush();
+                    add(ReceiveError('Unknown header type: ${header['type']}'));
                   }
                 } catch (e) {
                   log('Invalid header: $part, error: $e');
@@ -139,57 +163,75 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                   client.write(utf8.encoder.convert('$errorHeader\n'));
                   await client.flush();
                   headerBuffers[client]!.write('$part\n');
+                  add(ReceiveError('Invalid header: $e'));
                 }
               }
             } else if (fileNames[client] != null && fileSinks[client] != null) {
-              fileSinks[client]!.add(data);
-              bytesReceived[client] = bytesReceived[client]! + data.length;
-              log('Receiving file data: ${fileNames[client]} (${bytesReceived[client]} / ${fileSizes[client]})');
+              try {
+                fileSinks[client]!.add(data);
+                bytesReceived[client] = bytesReceived[client]! + data.length;
+                log('Receiving file data: ${fileNames[client]} (${bytesReceived[client]} / ${fileSizes[client]})');
 
-              if (bytesReceived[client]! >= fileSizes[client]!) {
-                await fileSinks[client]!.close();
-                final filePath =
-                    '${(await getApplicationDocumentsDirectory()).path}/${fileNames[client]}';
-                final savedFile = File(filePath);
-                final savedSize = await savedFile.length();
-                if (savedSize == fileSizes[client]) {
-                  log('File received and verified: ${fileNames[client]} ($savedSize bytes) at $filePath');
-                  add(ReceiveFile(fileNames[client]!, filePath));
-                } else {
-                  log('File size mismatch for ${fileNames[client]}: expected ${fileSizes[client]}, got $savedSize');
-                  final errorHeader = jsonEncode({
-                    'type': 'error',
-                    'message': 'File size mismatch for ${fileNames[client]}',
+                if (bytesReceived[client]! >= fileSizes[client]!) {
+                  await fileSinks[client]!.flush();
+                  await fileSinks[client]!.close();
+                  final filePath =
+                      '${(await getApplicationDocumentsDirectory()).path}/${fileNames[client]}';
+                  final savedFile = File(filePath);
+                  final savedSize = await savedFile.length();
+                  if (savedSize == fileSizes[client]) {
+                    log('File received and verified: ${fileNames[client]} ($savedSize bytes) at $filePath');
+                    add(ReceiveFile(fileNames[client]!, filePath));
+                  } else {
+                    log('File size mismatch for ${fileNames[client]}: expected ${fileSizes[client]}, got $savedSize');
+                    final errorHeader = jsonEncode({
+                      'type': 'error',
+                      'message': 'File size mismatch for ${fileNames[client]}',
+                      'fileId': _uuid.v4(),
+                    });
+                    for (var socket in clientSockets) {
+                      socket.write(utf8.encoder.convert('$errorHeader\n'));
+                      await socket.flush();
+                    }
+                    add(ReceiveError(
+                        'File size mismatch for ${fileNames[client]}'));
+                  }
+                  fileSinks[client] = null;
+                  fileNames[client] = null;
+                  fileSizes[client] = null;
+                  bytesReceived[client] = 0;
+
+                  final updatedFiles = directory
+                      .listSync()
+                      .whereType<File>()
+                      .map((f) => f.path.split('/').last)
+                      .toList();
+                  add(ReceiveFileList(updatedFiles));
+
+                  final fileListHeader = jsonEncode({
+                    'type': 'list',
+                    'files': updatedFiles,
                     'fileId': _uuid.v4(),
                   });
                   for (var socket in clientSockets) {
-                    socket.write(utf8.encoder.convert('$errorHeader\n'));
+                    socket.write(utf8.encoder.convert('$fileListHeader\n'));
                     await socket.flush();
                   }
-                  add(ReceiveError(
-                      'File size mismatch for ${fileNames[client]}'));
                 }
-                fileSinks[client] = null;
-                fileNames[client] = null;
-                fileSizes[client] = null;
-                bytesReceived[client] = 0;
-
-                final updatedFiles = directory
-                    .listSync()
-                    .whereType<File>()
-                    .map((f) => f.path.split('/').last)
-                    .toList();
-                add(ReceiveFileList(updatedFiles));
-
-                final fileListHeader = jsonEncode({
-                  'type': 'list',
-                  'files': updatedFiles,
+              } catch (e) {
+                log('Error writing file ${fileNames[client]}: $e');
+                final errorHeader = jsonEncode({
+                  'type': 'error',
+                  'message': 'Error writing file: $e',
                   'fileId': _uuid.v4(),
                 });
                 for (var socket in clientSockets) {
-                  socket.write(utf8.encoder.convert('$fileListHeader\n'));
+                  socket.write(utf8.encoder.convert('$errorHeader\n'));
                   await socket.flush();
                 }
+                add(ReceiveError(
+                    'Error writing file ${fileNames[client]}: $e'));
+                _cleanupClient(client);
               }
             } else {
               headerBuffers[client]!.write(message);
@@ -241,9 +283,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       'text': event.message,
       'fileId': _uuid.v4(),
     });
+
     for (var socket in clientSockets) {
-      socket.write(utf8.encoder.convert('$header\n'));
-      await socket.flush();
+      socket!.write('$header\n');
+      await socket!.flush();
     }
     emit(
       state.copyWith(
@@ -271,10 +314,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
         'fileId': _uuid.v4(),
       });
       for (var socket in clientSockets) {
-        socket.write(utf8.encoder.convert('$header\n'));
+        socket.write('$header\n');
         await socket.flush();
         await for (var chunk in file.openRead()) {
-          socket.write(chunk);
+          socket.add(chunk);
         }
         await socket.flush();
       }
@@ -347,7 +390,16 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     Emitter<ServerState> emit,
   ) async {
     log('Server error: ${event.error}');
-    emit(ServerState.error(event.error));
+    emit(state.copyWith(
+      messages: [
+        ...state.messages,
+        MessageModel(
+          text: 'Error: ${event.error}',
+          isSent: false,
+          files: [],
+        ),
+      ],
+    ));
   }
 
   Future<void> _onClientConnected(
