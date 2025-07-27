@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'dart:io';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 import '../../models/message_model.dart';
 import '../server/server_event.dart';
 import '../server/server_state.dart';
@@ -14,6 +15,8 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
   Map<Socket, String?> fileNames = {};
   Map<Socket, int?> fileSizes = {};
   Map<Socket, int> bytesReceived = {};
+  Map<Socket, StringBuffer> headerBuffers = {};
+  final Uuid _uuid = const Uuid();
 
   ServerBloc() : super(const ServerState.initial()) {
     on<StartServer>(_onStartServer);
@@ -36,7 +39,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       log('Starting server on port ${event.port}');
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind(ip, event.port);
+      serverSocket = await ServerSocket.bind('0.0.0.0', event.port);
       log('Server running at $ip:${event.port}');
       emit(
         ServerState.running(
@@ -52,6 +55,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
           'Client connected: ${client.remoteAddress.address}:${client.remotePort}',
         );
         clientSockets.add(client);
+        headerBuffers[client] = StringBuffer();
         add(const ClientConnected());
 
         final directory = await getApplicationDocumentsDirectory();
@@ -60,49 +64,79 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
             .whereType<File>()
             .map((f) => f.path.split('/').last)
             .toList();
-        client.write(utf8.encoder.convert('LIST:${files.join(',')}'));
+        final header = jsonEncode({
+          'type': 'list',
+          'files': files,
+          'fileId': _uuid.v4(),
+        });
+        client.write(utf8.encoder.convert('$header\n'));
 
         client.listen(
           (data) async {
             final message = utf8.decode(data, allowMalformed: true);
-            log('Received data from client: $message');
-
-            if (message.startsWith('MSG:')) {
-              final text = message.substring(4);
-              log('Received message: $text');
-              add(ReceiveMessage(text));
-
-              for (var socket in clientSockets) {
-                if (socket != client) {
-                  socket.write(utf8.encoder.convert('MSG:$text'));
+            if (fileNames[client] == null && message.contains('\n')) {
+              headerBuffers[client]!.write(message);
+              final parts = headerBuffers[client]!.toString().split('\n');
+              headerBuffers[client]!.clear();
+              for (var part in parts) {
+                if (part.isEmpty) continue;
+                try {
+                  final header = jsonDecode(part);
+                  log('Received header from client: $header');
+                  if (header['type'] == 'message') {
+                    final text = header['text'] as String;
+                    log('Received message: $text');
+                    add(ReceiveMessage(text));
+                    for (var socket in clientSockets) {
+                      if (socket != client) {
+                        socket.write(utf8.encoder.convert('$header\n'));
+                      }
+                    }
+                  } else if (header['type'] == 'download') {
+                    final requestedFile = header['fileName'] as String;
+                    final file = File('${directory.path}/$requestedFile');
+                    if (await file.exists()) {
+                      final fileSize = await file.length();
+                      log(
+                        'Sending file $requestedFile ($fileSize bytes) to client',
+                      );
+                      final fileHeader = jsonEncode({
+                        'type': 'file',
+                        'fileName': requestedFile,
+                        'fileSize': fileSize,
+                        'fileId': _uuid.v4(),
+                      });
+                      client.write(utf8.encoder.convert('$fileHeader\n'));
+                      await for (var chunk in file.openRead()) {
+                        client.write(chunk);
+                      }
+                      await client.flush();
+                    } else {
+                      log('File not found: $requestedFile');
+                      final errorHeader = jsonEncode({
+                        'type': 'error',
+                        'message': 'File not found',
+                        'fileId': _uuid.v4(),
+                      });
+                      client.write(utf8.encoder.convert('$errorHeader\n'));
+                      add(ReceiveError('File not found: $requestedFile'));
+                    }
+                  } else if (header['type'] == 'file') {
+                    fileNames[client] = header['fileName'] as String;
+                    fileSizes[client] = header['fileSize'] as int;
+                    fileSinks[client] = File(
+                      '${directory.path}/${header['fileName']}',
+                    ).openWrite();
+                    bytesReceived[client] = 0;
+                    log(
+                      'Preparing to receive file: ${header['fileName']} (${header['fileSize']} bytes)',
+                    );
+                  }
+                } catch (e) {
+                  log('Invalid header: $part, error: $e');
+                  headerBuffers[client]!.write('$part\n');
                 }
               }
-            } else if (message.startsWith('DOWNLOAD:')) {
-              final requestedFile = message.substring(9);
-              final file = File('${directory.path}/$requestedFile');
-              if (await file.exists()) {
-                final fileSize = await file.length();
-                log('Sending file $requestedFile ($fileSize bytes) to client');
-                client.write(
-                  utf8.encoder.convert('FILE:$requestedFile:$fileSize'),
-                );
-                await for (var chunk in file.openRead()) {
-                  client.write(chunk);
-                }
-              } else {
-                log('File not found: $requestedFile');
-                client.write(utf8.encoder.convert('ERROR:File not found'));
-                add(ReceiveError('File not found: $requestedFile'));
-              }
-            } else if (message.startsWith('FILE:')) {
-              final parts = message.split(':');
-              fileNames[client] = parts[1];
-              fileSizes[client] = int.parse(parts[2]);
-              fileSinks[client] = File(
-                '${directory.path}/${parts[1]}',
-              ).openWrite();
-              bytesReceived[client] = 0;
-              log('Preparing to receive file: ${parts[1]} (${parts[2]} bytes)');
             } else if (fileNames[client] != null && fileSinks[client] != null) {
               fileSinks[client]!.add(data);
               bytesReceived[client] = bytesReceived[client]! + data.length;
@@ -127,17 +161,27 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                     .toList();
                 add(ReceiveFileList(updatedFiles));
 
+                final fileListHeader = jsonEncode({
+                  'type': 'list',
+                  'files': updatedFiles,
+                  'fileId': _uuid.v4(),
+                });
                 for (var socket in clientSockets) {
-                  socket.write(
-                    utf8.encoder.convert('LIST:${updatedFiles.join(',')}'),
-                  );
+                  socket.write(utf8.encoder.convert('$fileListHeader\n'));
                 }
               }
+            } else {
+              headerBuffers[client]!.write(message);
             }
           },
           onError: (e) {
             log('Error from client: $e');
-            client.write(utf8.encoder.convert('ERROR:$e'));
+            final errorHeader = jsonEncode({
+              'type': 'error',
+              'message': e.toString(),
+              'fileId': _uuid.v4(),
+            });
+            client.write(utf8.encoder.convert('$errorHeader\n'));
             _cleanupClient(client);
             add(const ClientDisconnected());
           },
@@ -162,6 +206,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     fileNames.remove(client);
     fileSizes.remove(client);
     bytesReceived.remove(client);
+    headerBuffers.remove(client);
     client.close();
   }
 
@@ -170,8 +215,13 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     Emitter<ServerState> emit,
   ) async {
     log('Broadcasting message to clients: ${event.message}');
+    final header = jsonEncode({
+      'type': 'message',
+      'text': event.message,
+      'fileId': _uuid.v4(),
+    });
     for (var socket in clientSockets) {
-      socket.write(utf8.encoder.convert('MSG:${event.message}'));
+      socket.write(utf8.encoder.convert('$header\n'));
     }
     emit(
       state.copyWith(
@@ -189,11 +239,18 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       final fileSize = await file.length();
       final fileName = file.path.split('/').last;
       log('Sending file: $fileName ($fileSize bytes) to all clients');
+      final header = jsonEncode({
+        'type': 'file',
+        'fileName': fileName,
+        'fileSize': fileSize,
+        'fileId': _uuid.v4(),
+      });
       for (var socket in clientSockets) {
-        socket.write(utf8.encoder.convert('FILE:$fileName:$fileSize'));
+        socket.write(utf8.encoder.convert('$header\n'));
         await for (var chunk in file.openRead()) {
           socket.write(chunk);
         }
+        await socket.flush();
       }
       emit(
         state.copyWith(
@@ -297,6 +354,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     fileNames.clear();
     fileSizes.clear();
     bytesReceived.clear();
+    headerBuffers.clear();
     serverSocket = null;
     emit(const ServerState.initial());
   }
@@ -309,7 +367,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
         }
       }
     }
-    return '127.0.0.1';
+    return '0.0.0.0';
   }
 
   @override
