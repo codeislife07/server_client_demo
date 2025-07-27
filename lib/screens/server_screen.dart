@@ -58,7 +58,7 @@ class ServerScreen extends StatelessWidget {
                             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                             children: [
                               ElevatedButton.icon(
-                                onPressed: state.status == 'Server running'
+                                onPressed: state.status == 'running'
                                     ? null
                                     : () {
                                         context.read<ServerBloc>().add(
@@ -75,7 +75,7 @@ class ServerScreen extends StatelessWidget {
                                 ),
                               ),
                               ElevatedButton.icon(
-                                onPressed: state.status == 'Server running'
+                                onPressed: state.status == 'running'
                                     ? () {
                                         context.read<ServerBloc>().add(
                                               const StopServer(),

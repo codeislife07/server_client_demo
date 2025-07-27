@@ -67,33 +67,55 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
           'files': files,
           'fileId': _uuid.v4(),
         });
-        client.write(utf8.encoder.convert('$header\n'));
-        await client.flush();
+        try {
+          client.write(utf8.encoder.convert('$header\n'));
+          await client.flush();
+        } catch (e) {
+          log('Error sending file list to client: $e');
+          _cleanupClient(client);
+          return;
+        }
 
         client.listen(
           (data) async {
-            final message = utf8.decode(data, allowMalformed: true);
+            final message = utf8
+                .decode(data, allowMalformed: true)
+                .replaceAll('\r\n', '\n')
+                .trim();
             if (fileNames[client] == null && message.contains('\n')) {
               headerBuffers[client]!.write(message);
               final parts = headerBuffers[client]!.toString().split('\n');
               headerBuffers[client]!.clear();
               for (var part in parts) {
-                if (part.isEmpty) continue;
+                if (part.isEmpty || part.trim().isEmpty) continue;
                 try {
-                  final header = jsonDecode(part);
-                  log('Received header from client: $header');
+                  log('Raw header received: $part');
+                  final header = jsonDecode(part.trim());
+                  log('Parsed header: $header');
                   if (header['type'] == 'message') {
-                    final text = header['text'] as String;
+                    final text = header['text'] as String?;
+                    if (text == null) {
+                      throw FormatException('Missing text in message header');
+                    }
                     log('Received message: $text');
                     add(ReceiveMessage(text));
-                    for (var socket in clientSockets) {
+                    for (var socket in List.from(clientSockets)) {
                       if (socket != client) {
-                        socket.write(utf8.encoder.convert('$header\n'));
-                        await socket.flush();
+                        try {
+                          socket.write(utf8.encoder.convert('$header\n'));
+                          await socket.flush();
+                        } catch (e) {
+                          log('Error broadcasting to client ${socket.remoteAddress.address}: $e');
+                          _cleanupClient(socket);
+                        }
                       }
                     }
                   } else if (header['type'] == 'download') {
-                    final requestedFile = header['fileName'] as String;
+                    final requestedFile = header['fileName'] as String?;
+                    if (requestedFile == null) {
+                      throw FormatException(
+                          'Missing fileName in download header');
+                    }
                     final file = File('${directory.path}/$requestedFile');
                     if (await file.exists()) {
                       final fileSize = await file.length();
@@ -104,12 +126,17 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                         'fileSize': fileSize,
                         'fileId': _uuid.v4(),
                       });
-                      client.write(utf8.encoder.convert('$fileHeader\n'));
-                      await client.flush();
-                      await for (var chunk in file.openRead()) {
-                        client.write(chunk);
+                      try {
+                        client.write(utf8.encoder.convert('$fileHeader\n'));
+                        await client.flush();
+                        await for (var chunk in file.openRead()) {
+                          client.write(chunk);
+                        }
+                        await client.flush();
+                      } catch (e) {
+                        log('Error sending file to client: $e');
+                        _cleanupClient(client);
                       }
-                      await client.flush();
                     } else {
                       log('File not found: $requestedFile');
                       final errorHeader = jsonEncode({
@@ -128,7 +155,8 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                       log('Invalid file header: missing fileName or fileSize');
                       final errorHeader = jsonEncode({
                         'type': 'error',
-                        'message': 'Invalid file header',
+                        'message':
+                            'Invalid file header: missing fileName or fileSize',
                         'fileId': _uuid.v4(),
                       });
                       client.write(utf8.encoder.convert('$errorHeader\n'));
@@ -136,12 +164,14 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                       add(ReceiveError('Invalid file header'));
                       continue;
                     }
-                    fileNames[client] = fileName;
+                    final sanitizedFileName =
+                        fileName.replaceAll(RegExp(r'[^\w\.\-]'), '_');
+                    fileNames[client] = sanitizedFileName;
                     fileSizes[client] = fileSize;
-                    final filePath = '${directory.path}/$fileName';
+                    final filePath = '${directory.path}/$sanitizedFileName';
                     fileSinks[client] = File(filePath).openWrite();
                     bytesReceived[client] = 0;
-                    log('Preparing to receive file: $fileName ($fileSize bytes) at $filePath');
+                    log('Preparing to receive file: $sanitizedFileName ($fileSize bytes) at $filePath');
                   } else {
                     log('Unknown header type: ${header['type']}');
                     final errorHeader = jsonEncode({
@@ -160,8 +190,13 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                     'message': 'Invalid header: $e',
                     'fileId': _uuid.v4(),
                   });
-                  client.write(utf8.encoder.convert('$errorHeader\n'));
-                  await client.flush();
+                  try {
+                    client.write(utf8.encoder.convert('$errorHeader\n'));
+                    await client.flush();
+                  } catch (e) {
+                    log('Error sending error header: $e');
+                    _cleanupClient(client);
+                  }
                   headerBuffers[client]!.write('$part\n');
                   add(ReceiveError('Invalid header: $e'));
                 }
@@ -189,9 +224,14 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                       'message': 'File size mismatch for ${fileNames[client]}',
                       'fileId': _uuid.v4(),
                     });
-                    for (var socket in clientSockets) {
-                      socket.write(utf8.encoder.convert('$errorHeader\n'));
-                      await socket.flush();
+                    for (var socket in List.from(clientSockets)) {
+                      try {
+                        socket.write(utf8.encoder.convert('$errorHeader\n'));
+                        await socket.flush();
+                      } catch (e) {
+                        log('Error broadcasting error: $e');
+                        _cleanupClient(socket);
+                      }
                     }
                     add(ReceiveError(
                         'File size mismatch for ${fileNames[client]}'));
@@ -213,9 +253,14 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                     'files': updatedFiles,
                     'fileId': _uuid.v4(),
                   });
-                  for (var socket in clientSockets) {
-                    socket.write(utf8.encoder.convert('$fileListHeader\n'));
-                    await socket.flush();
+                  for (var socket in List.from(clientSockets)) {
+                    try {
+                      socket.write(utf8.encoder.convert('$fileListHeader\n'));
+                      await socket.flush();
+                    } catch (e) {
+                      log('Error broadcasting file list: $e');
+                      _cleanupClient(socket);
+                    }
                   }
                 }
               } catch (e) {
@@ -225,9 +270,14 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                   'message': 'Error writing file: $e',
                   'fileId': _uuid.v4(),
                 });
-                for (var socket in clientSockets) {
-                  socket.write(utf8.encoder.convert('$errorHeader\n'));
-                  await socket.flush();
+                for (var socket in List.from(clientSockets)) {
+                  try {
+                    socket.write(utf8.encoder.convert('$errorHeader\n'));
+                    await socket.flush();
+                  } catch (e) {
+                    log('Error broadcasting error: $e');
+                    _cleanupClient(socket);
+                  }
                 }
                 add(ReceiveError(
                     'Error writing file ${fileNames[client]}: $e'));
@@ -244,7 +294,9 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
               'message': e.toString(),
               'fileId': _uuid.v4(),
             });
-            client.write(utf8.encoder.convert('$errorHeader\n'));
+            try {
+              client.write(utf8.encoder.convert('$errorHeader\n'));
+            } catch (_) {}
             _cleanupClient(client);
             add(const ClientDisconnected());
           },
@@ -270,7 +322,9 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     fileSizes.remove(client);
     bytesReceived.remove(client);
     headerBuffers.remove(client);
-    client.close();
+    try {
+      client.close();
+    } catch (_) {}
   }
 
   Future<void> _onSendMessage(
@@ -283,10 +337,15 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       'text': event.message,
       'fileId': _uuid.v4(),
     });
-
-    for (var socket in clientSockets) {
-      socket!.write('$header\n');
-      await socket!.flush();
+    for (var socket in List.from(clientSockets)) {
+      try {
+        log('Sending message to client: ${socket.remoteAddress.address}');
+        socket.write(utf8.encoder.convert('$header\n'));
+        await socket.flush();
+      } catch (e) {
+        log('Error sending message to client ${socket.remoteAddress.address}: $e');
+        _cleanupClient(socket);
+      }
     }
     emit(
       state.copyWith(
@@ -305,7 +364,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     final file = File(event.filePath);
     if (await file.exists()) {
       final fileSize = await file.length();
-      final fileName = file.path.split('/').last;
+      final fileName = file.path.split(Platform.pathSeparator).last;
       log('Sending file: $fileName ($fileSize bytes) to all clients');
       final header = jsonEncode({
         'type': 'file',
@@ -313,13 +372,18 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
         'fileSize': fileSize,
         'fileId': _uuid.v4(),
       });
-      for (var socket in clientSockets) {
-        socket.write('$header\n');
-        await socket.flush();
-        await for (var chunk in file.openRead()) {
-          socket.add(chunk);
+      for (var socket in List.from(clientSockets)) {
+        try {
+          socket.write(utf8.encoder.convert('$header\n'));
+          await socket.flush();
+          await for (var chunk in file.openRead()) {
+            socket.write(chunk);
+          }
+          await socket.flush();
+        } catch (e) {
+          log('Error sending file to client ${socket.remoteAddress.address}: $e');
+          _cleanupClient(socket);
         }
-        await socket.flush();
       }
       emit(
         state.copyWith(
@@ -432,8 +496,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
   ) async {
     log('Stopping server...');
     await serverSocket?.close();
-    for (var socket in clientSockets) {
-      socket.close();
+    for (var socket in List.from(clientSockets)) {
+      try {
+        socket.close();
+      } catch (_) {}
     }
     clientSockets.clear();
     fileSinks.clear();
@@ -460,8 +526,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
   Future<void> close() {
     log('Closing server and all connections');
     serverSocket?.close();
-    for (var socket in clientSockets) {
-      socket.close();
+    for (var socket in List.from(clientSockets)) {
+      try {
+        socket.close();
+      } catch (_) {}
     }
     return super.close();
   }

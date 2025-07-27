@@ -43,35 +43,54 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
 
       socket!.listen(
         (data) async {
-          final message = utf8.decode(data, allowMalformed: true);
+          final message = utf8
+              .decode(data, allowMalformed: true)
+              .replaceAll('\r\n', '\n')
+              .trim();
           if (fileName == null && message.contains('\n')) {
             headerBuffer.write(message);
             final parts = headerBuffer.toString().split('\n');
             headerBuffer.clear();
             for (var part in parts) {
-              if (part.isEmpty) continue;
+              if (part.isEmpty || part.trim().isEmpty) continue;
               try {
-                final header = jsonDecode(part);
-                log('Received header: $header');
+                log('Raw header received: $part');
+                final header = jsonDecode(part.trim());
+                log('Parsed header: $header');
                 if (header['type'] == 'message') {
-                  final text = header['text'] as String;
+                  final text = header['text'] as String?;
+                  if (text == null) {
+                    throw FormatException('Missing text in message header');
+                  }
                   log('Received text message: $text');
                   add(ReceiveMessage(text));
                 } else if (header['type'] == 'list') {
                   final files =
-                      (header['files'] as List<dynamic>).cast<String>();
+                      (header['files'] as List<dynamic>?)?.cast<String>();
+                  if (files == null) {
+                    throw FormatException('Missing files in list header');
+                  }
                   log('Received file list: $files');
                   add(ReceiveFileList(files));
                 } else if (header['type'] == 'file') {
-                  fileName = header['fileName'] as String;
-                  fileSize = header['fileSize'] as int;
+                  fileName = header['fileName'] as String?;
+                  fileSize = header['fileSize'] as int?;
+                  if (fileName == null || fileSize == null) {
+                    throw FormatException(
+                        'Missing fileName or fileSize in file header');
+                  }
+                  final sanitizedFileName =
+                      fileName?.replaceAll(RegExp(r'[^\w\.\-]'), '_');
                   final filePath =
-                      '${(await getApplicationDocumentsDirectory()).path}/$fileName';
-                  log('Receiving file: $fileName ($fileSize bytes) at $filePath');
+                      '${(await getApplicationDocumentsDirectory()).path}/$sanitizedFileName';
+                  log('Receiving file: $sanitizedFileName ($fileSize bytes) at $filePath');
                   sink = File(filePath).openWrite();
                   bytesReceived = 0;
                 } else if (header['type'] == 'error') {
-                  final error = header['message'] as String;
+                  final error = header['message'] as String?;
+                  if (error == null) {
+                    throw FormatException('Missing message in error header');
+                  }
                   log('Server error: $error');
                   add(ReceiveMessage('Error: $error'));
                 }
@@ -86,6 +105,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
             bytesReceived += data.length;
             log('Receiving file chunk: $bytesReceived / $fileSize');
             if (bytesReceived >= fileSize!) {
+              await sink?.flush();
               await sink?.close();
               final filePath =
                   '${(await getApplicationDocumentsDirectory()).path}/$fileName';
@@ -135,7 +155,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
         log('Sending download request for file: ${event.fileName}');
         final header = jsonEncode({
           'type': 'download',
-          'fileName': event.fileName,
+          'fileName': event.fileName.replaceAll(RegExp(r'[^\w\.\-]'), '_'),
           'fileId': _uuid.v4(),
         });
         socket!.write('$header\n');
@@ -156,22 +176,30 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
     Emitter<ClientState> emit,
   ) async {
     if (socket != null) {
-      log('Sending message: ${event.message}');
-      final header = jsonEncode({
-        'type': 'message',
-        'text': event.message,
-        'fileId': _uuid.v4(),
-      });
-      socket!.write('$header\n');
-      await socket!.flush();
-      emit(
-        state.copyWith(
-          messages: [
-            ...state.messages,
-            MessageModel(text: event.message, files: [], isSent: true),
-          ],
-        ),
-      );
+      try {
+        log('Sending message: ${event.message}');
+        final header = jsonEncode({
+          'type': 'message',
+          'text': event.message,
+          'fileId': _uuid.v4(),
+        });
+        log('Sending header: $header');
+        socket!.write('$header\n');
+        await socket!.flush();
+        emit(
+          state.copyWith(
+            messages: [
+              ...state.messages,
+              MessageModel(text: event.message, files: [], isSent: true),
+            ],
+          ),
+        );
+      } catch (e) {
+        log('Error sending message: $e');
+        emit(ClientState.error('Error sending message: $e'));
+        socket?.close();
+        emit(const ClientState.initial());
+      }
     } else {
       log('Send message failed: Socket is null');
       emit(ClientState.error('Error: Socket not connected'));
@@ -185,37 +213,47 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
     if (socket != null) {
       final file = File(event.filePath);
       if (await file.exists()) {
-        final fileSize = await file.length();
-        final fileName = file.path.split('/').last;
-        log('Sending file: $fileName ($fileSize bytes)');
+        try {
+          final fileSize = await file.length();
+          final fileName = file.path
+              .split(Platform.pathSeparator)
+              .last
+              .replaceAll(RegExp(r'[^\w\.\-]'), '_');
+          log('Sending file: $fileName ($fileSize bytes)');
 
-        final header = jsonEncode({
-          'type': 'file',
-          'fileName': fileName,
-          'fileSize': fileSize,
-          'fileId': _uuid.v4(),
-        });
-        socket!.write('$header\n');
-        await socket!.flush();
-        await for (var chunk in file.openRead()) {
-          socket!.add(chunk);
+          final header = jsonEncode({
+            'type': 'file',
+            'fileName': fileName,
+            'fileSize': fileSize,
+            'fileId': _uuid.v4(),
+            'platform': Platform.isIOS ? 'ios' : 'android',
+          });
+          log('Sending header: $header');
+          socket!.write('$header\n');
+          await socket!.flush();
+          await for (var chunk in file.openRead()) {
+            socket!.add(chunk);
+          }
+          await socket!.flush();
+          log('File sent: $fileName');
+          emit(
+            state.copyWith(
+              messages: [
+                ...state.messages,
+                MessageModel(
+                  text: 'Sent file: $fileName',
+                  files: [],
+                  isSent: true,
+                  filePath: event.filePath,
+                ),
+              ],
+              filePaths: [...state.filePaths, event.filePath],
+            ),
+          );
+        } catch (e) {
+          log('Error sending file: $e');
+          emit(ClientState.error('Error sending file: $e'));
         }
-        await socket!.flush();
-        log('File sent: $fileName');
-        emit(
-          state.copyWith(
-            messages: [
-              ...state.messages,
-              MessageModel(
-                text: 'Sent file: $fileName',
-                files: [],
-                isSent: true,
-                filePath: event.filePath,
-              ),
-            ],
-            filePaths: [...state.filePaths, event.filePath],
-          ),
-        );
       } else {
         log('File not found: ${event.filePath}');
         emit(ClientState.error('File not found: ${event.filePath}'));
