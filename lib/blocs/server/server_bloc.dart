@@ -39,7 +39,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       log('Starting server on port ${event.port}');
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind('0.0.0.0', event.port);
+      serverSocket = await ServerSocket.bind(ip, event.port);
       log('Server running at $ip:${event.port}');
       emit(
         ServerState.running(
@@ -124,11 +124,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
                   } else if (header['type'] == 'file') {
                     fileNames[client] = header['fileName'] as String;
                     fileSizes[client] = header['fileSize'] as int;
-                    fileSinks[client] =
-                        File('${directory.path}/${header['fileName']}')
-                            .openWrite();
+                    final filePath = '${directory.path}/${header['fileName']}';
+                    fileSinks[client] = File(filePath).openWrite();
                     bytesReceived[client] = 0;
-                    log('Preparing to receive file: ${header['fileName']} (${header['fileSize']} bytes)');
+                    log('Preparing to receive file: ${header['fileName']} (${header['fileSize']} bytes) at $filePath');
                   }
                 } catch (e) {
                   log('Invalid header: $part, error: $e');
@@ -149,9 +148,27 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
 
               if (bytesReceived[client]! >= fileSizes[client]!) {
                 await fileSinks[client]!.close();
-                log('File received completely: ${fileNames[client]}');
-                add(ReceiveFile(fileNames[client]!));
-
+                final filePath =
+                    '${(await getApplicationDocumentsDirectory()).path}/${fileNames[client]}';
+                final savedFile = File(filePath);
+                final savedSize = await savedFile.length();
+                if (savedSize == fileSizes[client]) {
+                  log('File received and verified: ${fileNames[client]} ($savedSize bytes) at $filePath');
+                  add(ReceiveFile(fileNames[client]!, filePath));
+                } else {
+                  log('File size mismatch for ${fileNames[client]}: expected ${fileSizes[client]}, got $savedSize');
+                  final errorHeader = jsonEncode({
+                    'type': 'error',
+                    'message': 'File size mismatch for ${fileNames[client]}',
+                    'fileId': _uuid.v4(),
+                  });
+                  for (var socket in clientSockets) {
+                    socket.write(utf8.encoder.convert('$errorHeader\n'));
+                    await socket.flush();
+                  }
+                  add(ReceiveError(
+                      'File size mismatch for ${fileNames[client]}'));
+                }
                 fileSinks[client] = null;
                 fileNames[client] = null;
                 fileSizes[client] = null;
@@ -265,8 +282,14 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
         state.copyWith(
           messages: [
             ...state.messages,
-            MessageModel(text: 'Sent file: $fileName', isSent: true, files: []),
+            MessageModel(
+              text: 'Sent file: $fileName',
+              isSent: true,
+              files: [],
+              filePath: event.filePath,
+            ),
           ],
+          filePaths: [...state.filePaths, event.filePath],
         ),
       );
     } else {
@@ -302,7 +325,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
     ReceiveFile event,
     Emitter<ServerState> emit,
   ) async {
-    log('File received event: ${event.fileName}');
+    log('File received event: ${event.fileName} at ${event.filePath}');
     emit(
       state.copyWith(
         messages: [
@@ -311,8 +334,10 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
             text: 'Received file: ${event.fileName}',
             isSent: false,
             files: [],
+            filePath: event.filePath,
           ),
         ],
+        filePaths: [...state.filePaths, event.filePath],
       ),
     );
   }

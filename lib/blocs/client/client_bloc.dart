@@ -87,8 +87,17 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
             log('Receiving file chunk: $bytesReceived / $fileSize');
             if (bytesReceived >= fileSize!) {
               await sink?.close();
-              log('File received completely: $fileName');
-              add(ReceiveFile(fileName!));
+              final filePath =
+                  '${(await getApplicationDocumentsDirectory()).path}/$fileName';
+              final savedFile = File(filePath);
+              final savedSize = await savedFile.length();
+              if (savedSize == fileSize) {
+                log('File received and verified: $fileName ($savedSize bytes)');
+                add(ReceiveFile(fileName!, filePath));
+              } else {
+                log('File size mismatch for $fileName: expected $fileSize, got $savedSize');
+                add(ReceiveMessage('Error: File size mismatch for $fileName'));
+              }
               sink = null;
               fileName = null;
               fileSize = null;
@@ -201,8 +210,10 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
                 text: 'Sent file: $fileName',
                 files: [],
                 isSent: true,
+                filePath: event.filePath,
               ),
             ],
+            filePaths: [...state.filePaths, event.filePath],
           ),
         );
       } else {
@@ -242,7 +253,7 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
     ReceiveFile event,
     Emitter<ClientState> emit,
   ) async {
-    log('File received event: ${event.fileName}');
+    log('File received event: ${event.fileName} at ${event.filePath}');
     emit(
       state.copyWith(
         messages: [
@@ -251,8 +262,10 @@ class ClientBloc extends Bloc<ClientEvent, ClientState> {
             text: 'Received file: ${event.fileName}',
             isSent: false,
             files: [],
+            filePath: event.filePath,
           ),
         ],
+        filePaths: [...state.filePaths, event.filePath],
       ),
     );
   }

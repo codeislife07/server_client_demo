@@ -46,6 +46,7 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
   flutter_bloc:
+  equatable:
   qr_flutter:
   mobile_scanner:
   permission_handler:

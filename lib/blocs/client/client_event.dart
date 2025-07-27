@@ -45,6 +45,6 @@ class ReceiveFileList extends ClientEvent {
 
 class ReceiveFile extends ClientEvent {
   final String fileName;
-
-  const ReceiveFile(this.fileName);
+  final String filePath;
+  const ReceiveFile(this.fileName, this.filePath);
 }

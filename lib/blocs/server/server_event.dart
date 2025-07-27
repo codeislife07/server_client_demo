@@ -38,8 +38,8 @@ class ReceiveFileList extends ServerEvent {
 
 class ReceiveFile extends ServerEvent {
   final String fileName;
-
-  const ReceiveFile(this.fileName);
+  final String filePath;
+  const ReceiveFile(this.fileName, this.filePath);
 }
 
 class ReceiveError extends ServerEvent {
