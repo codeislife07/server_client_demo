@@ -53,6 +53,9 @@ dev_dependencies:
   network_info_plus: 
   path_provider:
   file_picker:
+  flutter_pdfview:
+  image:
+  open_file_plus:
   uuid:
  
 # For information on the generic Dart part of this file, see the

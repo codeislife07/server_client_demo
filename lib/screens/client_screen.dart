@@ -41,8 +41,8 @@ class _ClientScreenState extends State<ClientScreen> {
           ipController.text = parts[0];
           portController.text = parts[1];
           context.read<ClientBloc>().add(
-            ConnectToServer(parts[0], int.parse(parts[1])),
-          );
+                ConnectToServer(parts[0], int.parse(parts[1])),
+              );
           scannerController?.stop();
           Navigator.pop(context);
         }
@@ -113,11 +113,12 @@ class _ClientScreenState extends State<ClientScreen> {
                                       ElevatedButton.icon(
                                         onPressed: () {
                                           context.read<ClientBloc>().add(
-                                            ConnectToServer(
-                                              ipController.text,
-                                              int.parse(portController.text),
-                                            ),
-                                          );
+                                                ConnectToServer(
+                                                  ipController.text,
+                                                  int.parse(
+                                                      portController.text),
+                                                ),
+                                              );
                                         },
                                         icon: const Icon(
                                           Icons.connect_without_contact,
@@ -172,10 +173,11 @@ class _ClientScreenState extends State<ClientScreen> {
                           FileListWidget(
                             files: state.files,
                             onFileSelected: (file) {
-                              context.read<ClientBloc>().add(
-                                DownloadFile(file),
-                              );
+                              // context.read<ClientBloc>().add(
+                              //       DownloadFile(file),
+                              //     );
                             },
+                            filePaths: [],
                           ),
                           const SizedBox(height: 16),
                           const Text(
@@ -209,8 +211,8 @@ class _ClientScreenState extends State<ClientScreen> {
                           onPressed: () {
                             if (messageController.text.isNotEmpty) {
                               context.read<ClientBloc>().add(
-                                SendMessage(messageController.text),
-                              );
+                                    SendMessage(messageController.text),
+                                  );
                               messageController.clear();
                             }
                           },
@@ -218,13 +220,13 @@ class _ClientScreenState extends State<ClientScreen> {
                         ),
                         IconButton(
                           onPressed: () async {
-                            final result = await FilePicker.platform
-                                .pickFiles();
+                            final result =
+                                await FilePicker.platform.pickFiles();
                             if (result != null &&
                                 result.files.single.path != null) {
                               context.read<ClientBloc>().add(
-                                SendFile(result.files.single.path!),
-                              );
+                                    SendFile(result.files.single.path!),
+                                  );
                             }
                           },
                           icon: const Icon(Icons.attach_file),

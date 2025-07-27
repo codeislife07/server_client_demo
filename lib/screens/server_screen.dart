@@ -106,6 +106,7 @@ class ServerScreen extends StatelessWidget {
                             onFileSelected: (file) {
                               // context.read<ServerBloc>().add(SendFile('$file'));
                             },
+                            filePaths: [],
                           ),
                           const SizedBox(height: 16),
                           const Text(
