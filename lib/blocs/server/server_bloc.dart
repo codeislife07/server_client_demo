@@ -39,7 +39,7 @@ class ServerBloc extends Bloc<ServerEvent, ServerState> {
       log('Starting server on port ${event.port}');
       emit(const ServerState.loading());
       final ip = await _getServerIp();
-      serverSocket = await ServerSocket.bind('0.0.0.0', event.port);
+      serverSocket = await ServerSocket.bind(ip, event.port);
       log('Server running at $ip:${event.port}');
       emit(
         ServerState.running(
