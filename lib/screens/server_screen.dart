@@ -101,15 +101,11 @@ class ServerScreen extends StatelessWidget {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          Expanded(
-                            child: FileListWidget(
-                              files: state.files,
-                              onFileSelected: (file) {
-                                context.read<ServerBloc>().add(
-                                  SendFile('$file'),
-                                );
-                              },
-                            ),
+                          FileListWidget(
+                            files: state.files,
+                            onFileSelected: (file) {
+                              context.read<ServerBloc>().add(SendFile('$file'));
+                            },
                           ),
                           const SizedBox(height: 16),
                           const Text(
@@ -119,9 +115,7 @@ class ServerScreen extends StatelessWidget {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          Expanded(
-                            child: MessageListWidget(messages: state.messages),
-                          ),
+                          MessageListWidget(messages: state.messages),
                         ],
                       ),
                     ),

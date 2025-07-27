@@ -169,15 +169,13 @@ class _ClientScreenState extends State<ClientScreen> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          Expanded(
-                            child: FileListWidget(
-                              files: state.files,
-                              onFileSelected: (file) {
-                                context.read<ClientBloc>().add(
-                                  DownloadFile(file),
-                                );
-                              },
-                            ),
+                          FileListWidget(
+                            files: state.files,
+                            onFileSelected: (file) {
+                              context.read<ClientBloc>().add(
+                                DownloadFile(file),
+                              );
+                            },
                           ),
                           const SizedBox(height: 16),
                           const Text(
@@ -187,9 +185,7 @@ class _ClientScreenState extends State<ClientScreen> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          Expanded(
-                            child: MessageListWidget(messages: state.messages),
-                          ),
+                          MessageListWidget(messages: state.messages),
                         ],
                       ),
                     ),
